@@ -43,7 +43,7 @@ async function scrollToBottom(page: any) {
   });
 }
 
-export async function GET(request: NextRequest) {
+export async function GET(_request: NextRequest) {
   const redfinUrl = 'https://www.redfin.com/city/19187/WA/Walla-Walla';
   const rawLocation = 'Walla Walla, WA';
 
@@ -52,7 +52,7 @@ export async function GET(request: NextRequest) {
     console.log(`Scraping properties from: ${redfinUrl}`);
 
     browser = await puppeteer.launch({
-      headless: false,
+      headless: true,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
@@ -183,7 +183,11 @@ export async function GET(request: NextRequest) {
     }, { status: 500 });
   } finally {
     if (browser) {
-      await browser.close();
+      try {
+        await browser.close();
+      } catch (closeError) {
+        console.error('Error closing browser:', closeError);
+      }
     }
   }
 }
