@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 
-interface RedfinPropertyListing {
+interface PropertyListing {
   id: string;
   address: string;
   price: string;
@@ -10,18 +10,21 @@ interface RedfinPropertyListing {
   baths: string;
   sqft: string;
   listingUrl: string;
-  keyFacts?: string[];
+  description?: string;
+  amenities?: string[];
+  phone?: string;
 }
 
-export default function RedfinScraper() {
-  const [properties, setProperties] = useState<RedfinPropertyListing[]>([]);
+export default function Home() {
+  const [properties, setProperties] = useState<PropertyListing[]>([]);
   const [loading, setLoading] = useState(false);
   const [location] = useState('Walla Walla, WA'); // Fixed location since API is hardcoded
 
   const fetchProperties = async () => {
     setLoading(true);
     try {
-      const response = await fetch('/api/redfin-scraper');
+      // No location parameter needed since API is hardcoded to Walla Walla
+      const response = await fetch('/api/apartments-scraper');
       
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
@@ -57,11 +60,11 @@ export default function RedfinScraper() {
     <div className="min-h-screen p-8 bg-gray-50">
       <div className="max-w-7xl mx-auto">
         <h1 className="text-3xl font-bold text-center mb-8 text-gray-800">
-          Redfin Property Scraper
+          Apartments.com Scraper
         </h1>
         
         <p className="text-center text-gray-600 mb-6">
-          Rental and sale properties from Redfin in {location} using Puppeteer web scraping
+          Rental properties from Apartments.com in {location} using Puppeteer web scraping
         </p>
         
         {/* Refresh Button */}
@@ -69,7 +72,7 @@ export default function RedfinScraper() {
           <button
             onClick={handleRefresh}
             disabled={loading}
-            className="px-6 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {loading ? 'Scraping...' : 'Refresh Properties'}
           </button>
@@ -78,8 +81,8 @@ export default function RedfinScraper() {
         {/* Loading State */}
         {loading && (
           <div className="text-center py-8">
-            <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-red-600"></div>
-            <p className="mt-2 text-gray-600">Scraping properties from Redfin...</p>
+            <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+            <p className="mt-2 text-gray-600">Scraping properties from Apartments.com...</p>
           </div>
         )}
 
@@ -108,26 +111,63 @@ export default function RedfinScraper() {
                 </div>
                 
                 <div className="flex justify-between text-sm text-gray-500 mb-3">
-                  <span>{property.beds}</span>
-                  <span>{property.baths}</span>
-                  <span>{property.sqft}</span>
+                  <span>{property.beds} beds</span>
+                  <span>{property.baths} baths</span>
+                  <span>{property.sqft} sqft</span>
                 </div>
 
-                {/* Key Facts */}
-                {property.keyFacts && property.keyFacts.length > 0 && (
+                {/* Description */}
+                {property.description && (
                   <div className="mb-3">
-                    <h4 className="text-sm font-medium text-gray-700 mb-2">Key Facts:</h4>
+                    <p className="text-sm text-gray-600 line-clamp-3">
+                      {property.description}
+                    </p>
+                  </div>
+                )}
+
+                {/* Amenities */}
+                {property.amenities && property.amenities.length > 0 && (
+                  <div className="mb-3">
+                    <h4 className="text-sm font-medium text-gray-700 mb-2">Amenities:</h4>
                     <div className="flex flex-wrap gap-1">
-                      {property.keyFacts.map((fact, index) => (
+                      {property.amenities.slice(0, 6).map((amenity, index) => (
                         <span
                           key={index}
-                          className="inline-block bg-red-100 text-red-800 text-xs px-2 py-1 rounded-full"
+                          className="inline-block bg-blue-100 text-blue-800 text-xs px-2 py-1 rounded-full"
                         >
-                          {fact}
+                          {amenity}
                         </span>
                       ))}
+                      {property.amenities.length > 6 && (
+                        <span className="inline-block bg-gray-100 text-gray-600 text-xs px-2 py-1 rounded-full">
+                          +{property.amenities.length - 6} more
+                        </span>
+                      )}
                     </div>
                   </div>
+                )}
+
+                {/* Phone Number */}
+                {property.phone && (
+                  <div className="mb-3">
+                    <p className="text-sm text-gray-600">
+                      <span className="font-medium">Phone: </span>
+                      <a href={`tel:${property.phone}`} className="text-blue-600 hover:underline">
+                        {property.phone}
+                      </a>
+                    </p>
+                  </div>
+                )}
+                
+                {property.listingUrl && (
+                  <a
+                    href={property.listingUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-block w-full text-center bg-blue-600 text-white py-2 px-4 rounded hover:bg-blue-700 transition-colors text-sm"
+                  >
+                    View on Apartments.com
+                  </a>
                 )}
               </div>
             </div>
