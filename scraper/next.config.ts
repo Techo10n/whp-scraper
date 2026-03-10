@@ -1,6 +1,7 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  serverExternalPackages: ['better-sqlite3', 'puppeteer', 'puppeteer-extra', 'puppeteer-extra-plugin-stealth'],
   images: {
     remotePatterns: [
       {

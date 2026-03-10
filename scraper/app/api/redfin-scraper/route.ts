@@ -1,15 +1,19 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
+import type { Browser, Page } from 'puppeteer';
+import { upsertProperties } from '@/db/database';
 
-// Try to use puppeteer-extra with stealth, fallback to regular puppeteer
-let puppeteer: any;
-try {
-  puppeteer = require('puppeteer-extra');
-  const StealthPlugin = require('puppeteer-extra-plugin-stealth');
-  puppeteer.use(StealthPlugin());
-  console.log('Using puppeteer-extra with stealth plugin');
-} catch (error) {
-  console.warn('Failed to load puppeteer-extra, using regular puppeteer:', error);
-  puppeteer = require('puppeteer');
+async function initPuppeteer() {
+  try {
+    const { default: puppeteerExtra } = await import('puppeteer-extra');
+    const { default: StealthPlugin } = await import('puppeteer-extra-plugin-stealth');
+    puppeteerExtra.use(StealthPlugin());
+    console.log('Using puppeteer-extra with stealth plugin');
+    return puppeteerExtra;
+  } catch (error) {
+    console.warn('Failed to load puppeteer-extra, using regular puppeteer:', error);
+    const { default: puppeteer } = await import('puppeteer');
+    return puppeteer;
+  }
 }
 
 export interface RedfinPropertyListing {
@@ -24,7 +28,7 @@ export interface RedfinPropertyListing {
 }
 
 // Scroll the page slowly to the bottom to load all lazy elements
-async function scrollToBottom(page: any) {
+async function scrollToBottom(page: Page) {
   await page.evaluate(async () => {
     await new Promise<void>((resolve) => {
       let totalHeight = 0;
@@ -43,14 +47,15 @@ async function scrollToBottom(page: any) {
   });
 }
 
-export async function GET(_request: NextRequest) {
+export async function GET() {
   const redfinUrl = 'https://www.redfin.com/city/19187/WA/Walla-Walla';
   const rawLocation = 'Walla Walla, WA';
 
-  let browser;
+  let browser: Browser | undefined;
   try {
     console.log(`Scraping properties from: ${redfinUrl}`);
 
+    const puppeteer = await initPuppeteer();
     browser = await puppeteer.launch({
       headless: true,
       args: [
@@ -91,7 +96,16 @@ export async function GET(_request: NextRequest) {
 
       const propertiesOnPage = await page.evaluate(() => {
         const propertyCards = document.querySelectorAll('.bp-Homecard');
-        const properties: any[] = [];
+        const properties: {
+          id: string;
+          address: string;
+          price: string;
+          beds: string;
+          baths: string;
+          sqft: string;
+          listingUrl: string;
+          keyFacts: string[];
+        }[] = [];
 
         propertyCards.forEach((card, index) => {
           try {
@@ -165,12 +179,28 @@ export async function GET(_request: NextRequest) {
       });
     }
 
+    // Save to database
+    const dbResults = upsertProperties(
+      allProperties.map(p => ({
+        source: 'Redfin',
+        address: p.address,
+        price: p.price,
+        beds: p.beds,
+        baths: p.baths,
+        sqft: p.sqft,
+        listing_url: p.listingUrl,
+        key_facts: p.keyFacts,
+        location: rawLocation,
+      }))
+    );
+
     return NextResponse.json({
       success: true,
       properties: allProperties,
       location: rawLocation,
       source: 'Redfin',
-      note: `Successfully scraped ${allProperties.length} properties from all pages of Redfin`
+      saved: dbResults,
+      note: `Scraped ${allProperties.length} properties. ${dbResults.inserted} new, ${dbResults.updated} already known.`
     });
 
   } catch (error) {

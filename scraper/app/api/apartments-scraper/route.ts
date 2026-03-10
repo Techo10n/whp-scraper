@@ -1,15 +1,19 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
+import type { Browser } from 'puppeteer';
+import { upsertProperties } from '@/db/database';
 
-// Try to use puppeteer-extra with stealth, fallback to regular puppeteer
-let puppeteer: any;
-try {
-  puppeteer = require('puppeteer-extra');
-  const StealthPlugin = require('puppeteer-extra-plugin-stealth');
-  puppeteer.use(StealthPlugin());
-  console.log('Using puppeteer-extra with stealth plugin');
-} catch (error) {
-  console.warn('Failed to load puppeteer-extra, using regular puppeteer:', error);
-  puppeteer = require('puppeteer');
+async function initPuppeteer() {
+  try {
+    const { default: puppeteerExtra } = await import('puppeteer-extra');
+    const { default: StealthPlugin } = await import('puppeteer-extra-plugin-stealth');
+    puppeteerExtra.use(StealthPlugin());
+    console.log('Using puppeteer-extra with stealth plugin');
+    return puppeteerExtra;
+  } catch (error) {
+    console.warn('Failed to load puppeteer-extra, using regular puppeteer:', error);
+    const { default: puppeteer } = await import('puppeteer');
+    return puppeteer;
+  }
 }
 
 export interface PropertyListing {
@@ -25,14 +29,15 @@ export interface PropertyListing {
   phone?: string;
 }
 
-export async function GET(request: NextRequest) {
+export async function GET() {
   const apartmentsUrl = 'https://www.apartments.com/houses/walla-walla-wa/';
   const rawLocation = 'Walla Walla, WA';
 
-  let browser;
+  let browser: Browser | undefined;
   try {
     console.log(`Scraping apartments from: ${apartmentsUrl}`);
 
+    const puppeteer = await initPuppeteer();
     browser = await puppeteer.launch({
       headless: true,
       args: [
@@ -74,10 +79,10 @@ export async function GET(request: NextRequest) {
     // Get all property links from the main listing page
     const propertyLinks = await page.evaluate(() => {
       const links: string[] = [];
-      
+
       // Then, get links from .placard elements (remaining properties)
       const placardElements = document.querySelectorAll('article.placard');
-      placardElements.forEach((element, index) => {
+      placardElements.forEach((element) => {
         // Look for the data-url attribute first, then fallback to finding a link
         const dataUrl = element.getAttribute('data-url');
         if (dataUrl) {
@@ -95,7 +100,7 @@ export async function GET(request: NextRequest) {
           }
         }
       });
-      
+
       return links;
     });
 
@@ -126,7 +131,7 @@ export async function GET(request: NextRequest) {
           };
 
           const getRentInfo = () => {
-            const info = {} as any;
+            const info: Record<string, string> = {};
             document.querySelectorAll('#priceBedBathAreaInfoWrapper .priceBedRangeInfo li').forEach(li => {
               const label = li.querySelector('.rentInfoLabel')?.textContent?.trim().toLowerCase();
               const value = li.querySelector('.rentInfoDetail')?.textContent?.trim();
@@ -176,12 +181,30 @@ export async function GET(request: NextRequest) {
 
     console.log(`Finished scraping. Total properties found: ${allProperties.length}`);
 
+    // Save to database
+    const dbResults = upsertProperties(
+      allProperties.map(p => ({
+        source: 'Apartments.com',
+        address: p.address,
+        price: p.price,
+        beds: p.beds,
+        baths: p.baths,
+        sqft: p.sqft,
+        listing_url: p.listingUrl,
+        description: p.description,
+        amenities: p.amenities,
+        phone: p.phone,
+        location: rawLocation,
+      }))
+    );
+
     return NextResponse.json({
       success: true,
       properties: allProperties,
       location: rawLocation,
       source: 'Apartments.com',
-      note: `Successfully scraped ${allProperties.length} properties from ${propertyLinks.length} listings`
+      saved: dbResults,
+      note: `Scraped ${allProperties.length} properties. ${dbResults.inserted} new, ${dbResults.updated} already known.`
     });
 
   } catch (error) {

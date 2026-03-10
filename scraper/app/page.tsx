@@ -1,145 +1,294 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 
-interface RedfinPropertyListing {
-  id: string;
+interface Property {
+  id: number;
+  source: string;
   address: string;
   price: string;
   beds: string;
   baths: string;
   sqft: string;
-  listingUrl: string;
-  keyFacts?: string[];
+  listing_url: string;
+  description?: string;
+  amenities?: string[];
+  phone?: string;
+  key_facts?: string[];
+  location: string;
+  date_added: string;
+  last_seen: string;
 }
 
-export default function RedfinScraper() {
-  const [properties, setProperties] = useState<RedfinPropertyListing[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [location] = useState('Walla Walla, WA'); // Fixed location since API is hardcoded
+interface Stats {
+  total: number;
+  bySource: Record<string, number>;
+  newest: string | null;
+}
 
-  const fetchProperties = async () => {
-    setLoading(true);
+interface ScrapeResult {
+  source: string;
+  status: 'idle' | 'running' | 'done' | 'error';
+  message: string;
+  newCount?: number;
+}
+
+const SOURCES = [
+  { key: 'redfin', label: 'Redfin', dbSource: 'Redfin', endpoint: '/api/scrape?source=redfin', color: 'bg-red-600 hover:bg-red-700' },
+  { key: 'craigslist-sale', label: 'Craigslist (For Sale)', dbSource: 'Craigslist (For Sale)', endpoint: '/api/scrape?source=craigslist-sale', color: 'bg-orange-500 hover:bg-orange-600' },
+  { key: 'craigslist-rentals', label: 'Craigslist (Rentals)', dbSource: 'Craigslist (Rentals)', endpoint: '/api/scrape?source=craigslist-rentals', color: 'bg-amber-500 hover:bg-amber-600' },
+  { key: 'zumper', label: 'Zumper', dbSource: 'Zumper', endpoint: '/api/scrape?source=zumper', color: 'bg-teal-600 hover:bg-teal-700' },
+];
+
+const BADGE_COLORS: Record<string, string> = {
+  'Redfin': 'bg-red-100 text-red-700',
+  'Craigslist (For Sale)': 'bg-orange-100 text-orange-700',
+  'Craigslist (Rentals)': 'bg-amber-100 text-amber-700',
+  'Zumper': 'bg-teal-100 text-teal-700',
+  'Apartments.com': 'bg-blue-100 text-blue-700',
+};
+
+export default function Dashboard() {
+  const [properties, setProperties] = useState<Property[]>([]);
+  const [stats, setStats] = useState<Stats | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [filterSource, setFilterSource] = useState<string>('all');
+  const [scrapeResults, setScrapeResults] = useState<Record<string, ScrapeResult>>({});
+  const [deletingId, setDeletingId] = useState<number | null>(null);
+  const [search, setSearch] = useState('');
+
+  const fetchProperties = useCallback(async () => {
     try {
-      const response = await fetch('/api/redfin-scraper');
-      
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-      const data = await response.json();
-      
+      const url = filterSource === 'all'
+        ? '/api/properties'
+        : `/api/properties?source=${encodeURIComponent(filterSource)}`;
+      const res = await fetch(url);
+      const data = await res.json();
       if (data.success) {
         setProperties(data.properties);
-        if (data.note || data.source) {
-          console.log('API Note:', data.note || `Source: ${data.source}`);
-        }
-      } else {
-        console.error('Failed to fetch properties:', data.error);
-        alert(`Error: ${data.error}. ${data.note || ''}`);
+        setStats(data.stats);
       }
-    } catch (error) {
-      console.error('Error fetching properties:', error);
-      alert('Network error occurred while fetching properties');
+    } catch (e) {
+      console.error('Failed to load properties', e);
     } finally {
       setLoading(false);
     }
-  };
+  }, [filterSource]);
 
   useEffect(() => {
     fetchProperties();
-  }, []); // Only run on mount
+  }, [fetchProperties]);
 
-  const handleRefresh = () => {
-    fetchProperties();
-  };
+  async function runScraper(source: typeof SOURCES[number]) {
+    setScrapeResults(prev => ({
+      ...prev,
+      [source.key]: { source: source.label, status: 'running', message: 'Scraping in progress...' }
+    }));
+    try {
+      const res = await fetch(source.endpoint);
+      const data = await res.json();
+      if (data.success) {
+        setScrapeResults(prev => ({
+          ...prev,
+          [source.key]: {
+            source: source.label,
+            status: 'done',
+            message: `Done — ${data.saved?.inserted ?? 0} new listings added.`,
+            newCount: data.saved?.inserted,
+          }
+        }));
+        await fetchProperties();
+      } else {
+        setScrapeResults(prev => ({
+          ...prev,
+          [source.key]: {
+            source: source.label,
+            status: 'error',
+            message: data.details || data.error || 'Unknown error',
+          }
+        }));
+      }
+    } catch {
+      setScrapeResults(prev => ({
+        ...prev,
+        [source.key]: {
+          source: source.label,
+          status: 'error',
+          message: 'Request failed. Is the dev server running?',
+        }
+      }));
+    }
+  }
+
+  async function handleDelete(id: number) {
+    if (!confirm('Remove this listing from the database?')) return;
+    setDeletingId(id);
+    try {
+      await fetch(`/api/properties?id=${id}`, { method: 'DELETE' });
+      setProperties(prev => prev.filter(p => p.id !== id));
+      setStats(prev => prev ? { ...prev, total: prev.total - 1 } : prev);
+    } finally {
+      setDeletingId(null);
+    }
+  }
+
+  const filtered = properties.filter(p => {
+    if (!search) return true;
+    const q = search.toLowerCase();
+    return p.address.toLowerCase().includes(q)
+      || p.price?.toLowerCase().includes(q)
+      || p.source.toLowerCase().includes(q);
+  });
+
+  const formatDate = (iso: string) =>
+    new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 
   return (
-    <div className="min-h-screen p-8 bg-gray-50">
-      <div className="max-w-7xl mx-auto">
-        <h1 className="text-3xl font-bold text-center mb-8 text-gray-800">
-          Redfin Property Scraper
-        </h1>
-        
-        <p className="text-center text-gray-600 mb-6">
-          Rental and sale properties from Redfin in {location} using Puppeteer web scraping
-        </p>
-        
-        {/* Refresh Button */}
-        <div className="flex justify-center mb-8">
-          <button
-            onClick={handleRefresh}
-            disabled={loading}
-            className="px-6 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {loading ? 'Scraping...' : 'Refresh Properties'}
-          </button>
-        </div>
-
-        {/* Loading State */}
-        {loading && (
-          <div className="text-center py-8">
-            <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-red-600"></div>
-            <p className="mt-2 text-gray-600">Scraping properties from Redfin...</p>
+    <div className="min-h-screen bg-gray-50">
+      <div className="bg-white border-b border-gray-200 px-6 py-4">
+        <div className="max-w-7xl mx-auto flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-bold text-gray-900">Property Database</h1>
+            <p className="text-sm text-gray-500 mt-0.5">Walla Walla, WA — Home Reseller Dashboard</p>
           </div>
-        )}
-
-        {/* Results Header */}
-        {!loading && properties.length > 0 && (
-          <div className="mb-6">
-            <h2 className="text-xl font-semibold text-gray-800">
-              Found {properties.length} properties in {location}
-            </h2>
-          </div>
-        )}
-
-        {/* Property Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {properties.map((property) => (
-            <div key={property.id} className="bg-white rounded-lg shadow-md overflow-hidden hover:shadow-lg transition-shadow">
-              {/* Property Details */}
-              <div className="p-4">
-                <div className="mb-2">
-                  <h3 className="text-lg font-semibold text-gray-800 mb-1">
-                    {property.price}
-                  </h3>
-                  <p className="text-gray-600 text-sm">
-                    {property.address}
-                  </p>
-                </div>
-                
-                <div className="flex justify-between text-sm text-gray-500 mb-3">
-                  <span>{property.beds}</span>
-                  <span>{property.baths}</span>
-                  <span>{property.sqft}</span>
-                </div>
-
-                {/* Key Facts */}
-                {property.keyFacts && property.keyFacts.length > 0 && (
-                  <div className="mb-3">
-                    <h4 className="text-sm font-medium text-gray-700 mb-2">Key Facts:</h4>
-                    <div className="flex flex-wrap gap-1">
-                      {property.keyFacts.map((fact, index) => (
-                        <span
-                          key={index}
-                          className="inline-block bg-red-100 text-red-800 text-xs px-2 py-1 rounded-full"
-                        >
-                          {fact}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                )}
+          {stats && (
+            <div className="flex gap-6 text-center">
+              <div>
+                <div className="text-2xl font-bold text-gray-900">{stats.total}</div>
+                <div className="text-xs text-gray-500">Total Listings</div>
               </div>
+              {Object.entries(stats.bySource).map(([src, count]) => (
+                <div key={src}>
+                  <div className="text-2xl font-bold text-gray-900">{count}</div>
+                  <div className="text-xs text-gray-500">{src}</div>
+                </div>
+              ))}
             </div>
-          ))}
+          )}
+        </div>
+      </div>
+
+      <div className="max-w-7xl mx-auto px-6 py-6">
+        <div className="bg-white rounded-lg border border-gray-200 p-5 mb-6">
+          <h2 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-3">Run Scrapers</h2>
+          <div className="flex flex-wrap gap-4">
+            {SOURCES.map(source => {
+              const result = scrapeResults[source.key];
+              const isRunning = result?.status === 'running';
+              return (
+                <div key={source.key} className="flex items-center gap-3">
+                  <button
+                    onClick={() => runScraper(source)}
+                    disabled={isRunning}
+                    className={`${source.color} text-white px-4 py-2 rounded-md text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed transition-colors`}
+                  >
+                    {isRunning ? (
+                      <span className="flex items-center gap-2">
+                        <svg className="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24" fill="none">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
+                        </svg>
+                        Scraping {source.label}...
+                      </span>
+                    ) : `Scrape ${source.label}`}
+                  </button>
+                  {result && result.status !== 'running' && (
+                    <span className={`text-sm ${result.status === 'done' ? 'text-green-600' : 'text-red-600'}`}>
+                      {result.status === 'done' ? '✓' : '✗'} {result.message}
+                    </span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
         </div>
 
-        {/* No Results */}
-        {!loading && properties.length === 0 && (
-          <div className="text-center py-8">
-            <p className="text-gray-600">No properties found. Try refreshing to scrape again.</p>
-          </div>
-        )}
+        <div className="flex gap-3 mb-4 items-center text-black">
+          <input
+            type="text"
+            placeholder="Search address, price, source..."
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            className="border border-gray-300 rounded-md px-3 py-2 text-sm w-72 focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+          <select
+            value={filterSource}
+            onChange={e => { setFilterSource(e.target.value); setLoading(true); }}
+            className="border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          >
+            <option value="all">All Sources</option>
+            {SOURCES.map(s => <option key={s.key} value={s.dbSource}>{s.label}</option>)}
+          </select>
+          <span className="text-sm text-gray-500 ml-auto">
+            {filtered.length} listing{filtered.length !== 1 ? 's' : ''}
+          </span>
+        </div>
+
+        <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
+          {loading ? (
+            <div className="p-12 text-center text-gray-500">
+              <svg className="animate-spin h-6 w-6 mx-auto mb-2 text-gray-400" viewBox="0 0 24 24" fill="none">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
+              </svg>
+              Loading...
+            </div>
+          ) : filtered.length === 0 ? (
+            <div className="p-12 text-center text-gray-500">
+              <p className="text-lg font-medium mb-1">No listings yet</p>
+              <p className="text-sm">Run a scraper above to populate the database.</p>
+            </div>
+          ) : (
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50 border-b border-gray-200">
+                <tr>
+                  <th className="text-left px-4 py-3 font-medium text-gray-600">Address</th>
+                  <th className="text-left px-4 py-3 font-medium text-gray-600">Price</th>
+                  <th className="text-left px-4 py-3 font-medium text-gray-600">Beds / Baths / Sqft</th>
+                  <th className="text-left px-4 py-3 font-medium text-gray-600">Source</th>
+                  <th className="text-left px-4 py-3 font-medium text-gray-600">Added</th>
+                  <th className="text-left px-4 py-3 font-medium text-gray-600">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {filtered.map(property => (
+                  <tr key={property.id} className="hover:bg-gray-50 transition-colors">
+                    <td className="px-4 py-3">
+                      <a
+                        href={property.listing_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-blue-600 hover:underline font-medium"
+                      >
+                        {property.address || '—'}
+                      </a>
+                    </td>
+                    <td className="px-4 py-3 text-gray-900 font-semibold">{property.price || '—'}</td>
+                    <td className="px-4 py-3 text-gray-600">
+                      {[property.beds, property.baths, property.sqft].filter(Boolean).join(' · ') || '—'}
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${BADGE_COLORS[property.source] ?? 'bg-gray-100 text-gray-700'
+                        }`}>
+                        {property.source}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-gray-500">{formatDate(property.date_added)}</td>
+                    <td className="px-4 py-3">
+                      <button
+                        onClick={() => handleDelete(property.id)}
+                        disabled={deletingId === property.id}
+                        className="text-red-500 hover:text-red-700 text-xs disabled:opacity-40"
+                      >
+                        {deletingId === property.id ? 'Removing...' : 'Remove'}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
       </div>
     </div>
   );

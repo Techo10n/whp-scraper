@@ -1,36 +1,127 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# WHP Scraper
 
-## Getting Started
+A Next.js app that scrapes real estate listings for **Walla Walla, WA** and stores them in a local SQLite database. Built for house-reseller research.
 
-First, run the development server:
+## Running the app
 
 ```bash
+cd scraper
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## How to use
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+The dashboard has one page. At the top you'll find scraper buttons — click any one to start a scrape. Results are saved to the local database and displayed in the table below. You can filter by source, search by address/price, and delete individual listings.
 
-## Learn More
+Each scrape is an upsert: new listings are inserted, existing ones (matched by URL) just get their `last_seen` timestamp updated, so you won't accumulate duplicates.
 
-To learn more about Next.js, take a look at the following resources:
+## Scrapers
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+| Source | Type | Notes |
+|--------|------|-------|
+| **Redfin** | For-sale homes | Paginates through all results |
+| **Craigslist (For Sale)** | For-sale by owner | `kpr.craigslist.org` — covers Walla Walla via Tri-Cities region |
+| **Craigslist (Rentals)** | Rentals | Same region |
+| **Zumper** | Rentals | ~120 WW listings; tries embedded JSON first, falls back to page-by-page |
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+### Sites that are blocked
 
-## Deploy on Vercel
+- **Apartments.com** — Akamai WAF returns "Access Denied" to all headless Chrome
+- **Zillow / Trulia** — PerimeterX bot protection
+- **Realtor.com** — Cloudflare bot protection
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Adding a new scraper
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+1. Create `lib/scrapers/yoursite.ts` and export a `ScraperDef`:
+
+```ts
+import type { Page } from 'puppeteer';
+import type { PropertyRecord } from '@/db/database';
+import type { ScraperDef } from './types';
+
+async function scrape(page: Page): Promise<PropertyRecord[]> {
+  await page.goto('https://yoursite.com/walla-walla-wa', { waitUntil: 'networkidle2', timeout: 60000 });
+  // ... extract data ...
+  return [{ source: 'YourSite', address: '...', listing_url: '...', location: 'Walla Walla, WA' }];
+}
+
+export const yoursiteScraper: ScraperDef = {
+  key: 'yoursite',
+  label: 'YourSite',
+  dbSource: 'YourSite',
+  color: 'bg-purple-600 hover:bg-purple-700',
+  scrape,
+};
+```
+
+2. Add it to `lib/scrapers/registry.ts`:
+
+```ts
+import { yoursiteScraper } from './yoursite';
+
+export const allScrapers: ScraperDef[] = [
+  redfinScraper,
+  craigslistSaleScraper,
+  craigslistRentalsScraper,
+  zumperScraper,
+  yoursiteScraper,   // ← add here
+];
+```
+
+3. Add it to `SOURCES` and `BADGE_COLORS` in `app/page.tsx`:
+
+```ts
+// SOURCES array
+{ key: 'yoursite', label: 'YourSite', dbSource: 'YourSite', endpoint: '/api/scrape?source=yoursite', color: 'bg-purple-600 hover:bg-purple-700' },
+
+// BADGE_COLORS map
+'YourSite': 'bg-purple-100 text-purple-700',
+```
+
+That's it — no new route file needed. The unified `/api/scrape?source=yoursite` endpoint handles it automatically.
+
+## Project structure
+
+```
+scraper/
+  app/
+    page.tsx                    # Dashboard UI
+    api/
+      scrape/route.ts           # Unified scraper endpoint: GET /api/scrape?source=KEY
+      properties/route.ts       # DB read/delete: GET/DELETE /api/properties
+  lib/
+    scrapers/
+      types.ts                  # ScraperDef interface
+      browser.ts                # Shared Puppeteer launch utility
+      registry.ts               # Maps source keys to scraper adapters
+      redfin.ts                 # Redfin adapter
+      craigslist.ts             # Craigslist adapter (sale + rentals)
+      zumper.ts                 # Zumper adapter
+  db/
+    database.ts                 # SQLite helpers (upsertProperties, getAllProperties, getStats)
+  data/
+    properties.db               # SQLite database (gitignored, created at runtime)
+```
+
+## Database
+
+SQLite file at `scraper/data/properties.db`, created automatically on first run.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | INTEGER | Auto-increment primary key |
+| `source` | TEXT | e.g. "Redfin", "Craigslist (Rentals)" |
+| `address` | TEXT | |
+| `price` | TEXT | |
+| `beds` / `baths` / `sqft` | TEXT | |
+| `listing_url` | TEXT UNIQUE | Deduplication key |
+| `description` | TEXT | |
+| `amenities` | TEXT | JSON array |
+| `phone` | TEXT | |
+| `key_facts` | TEXT | JSON array (Redfin only) |
+| `location` | TEXT | Always "Walla Walla, WA" |
+| `date_added` | DATETIME | Set on first insert |
+| `last_seen` | DATETIME | Updated on every upsert |
