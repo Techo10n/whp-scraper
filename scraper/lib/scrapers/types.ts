@@ -6,5 +6,7 @@ export interface ScraperDef {
   label: string;     // Display name, e.g. "Redfin"
   dbSource: string;  // Value stored in DB 'source' column
   color: string;     // Tailwind button color classes
-  scrape: (page: Page) => Promise<PropertyRecord[]>;
+  // Browser-based scrapers implement scrape(); API-based scrapers implement scrapeApi()
+  scrape?: (page: Page) => Promise<PropertyRecord[]>;
+  scrapeApi?: () => Promise<PropertyRecord[]>;
 }

@@ -67,42 +67,81 @@ export interface UpsertResult {
   updated: number;
 }
 
+// Inline normalization — strips city/state/zip and lowercases so cross-scrape
+// address matching works regardless of how the suffix was formatted.
+function normalizeStreet(address: string): string {
+  return address
+    .toLowerCase()
+    .replace(/,.*$/, '')
+    .replace(/[^\w\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 export function upsertProperties(properties: PropertyRecord[]): UpsertResult {
   const db = getDb();
   const result: UpsertResult = { inserted: 0, updated: 0 };
 
-  const checkStmt = db.prepare('SELECT id FROM properties WHERE listing_url = ?');
+  const checkByUrlStmt = db.prepare('SELECT id FROM properties WHERE listing_url = ?');
+
+  // Secondary check: same source + same normalized street address → treat as repost
+  const checkByAddrStmt = db.prepare(`
+    SELECT listing_url FROM properties
+    WHERE source = @source AND LOWER(address) LIKE @addressPattern
+    LIMIT 1
+  `);
+
   const insertStmt = db.prepare(`
     INSERT INTO properties (source, address, price, beds, baths, sqft, listing_url, description, amenities, phone, key_facts, location)
     VALUES (@source, @address, @price, @beds, @baths, @sqft, @listing_url, @description, @amenities, @phone, @key_facts, @location)
   `);
-  const updateSeenStmt = db.prepare(`
+  const updateSeenByUrlStmt = db.prepare(`
     UPDATE properties SET last_seen = CURRENT_TIMESTAMP, price = @price WHERE listing_url = @listing_url
   `);
 
   const upsertMany = db.transaction((props: PropertyRecord[]) => {
     for (const prop of props) {
-      const existing = checkStmt.get(prop.listing_url);
-      if (!existing) {
-        insertStmt.run({
-          source: prop.source,
-          address: prop.address,
-          price: prop.price ?? null,
-          beds: prop.beds ?? null,
-          baths: prop.baths ?? null,
-          sqft: prop.sqft ?? null,
-          listing_url: prop.listing_url,
-          description: prop.description ?? null,
-          phone: prop.phone ?? null,
-          location: prop.location ?? null,
-          amenities: prop.amenities ? JSON.stringify(prop.amenities) : null,
-          key_facts: prop.key_facts ? JSON.stringify(prop.key_facts) : null,
-        });
-        result.inserted++;
-      } else {
-        updateSeenStmt.run({ price: prop.price ?? null, listing_url: prop.listing_url });
+      // ── 1. Exact URL match (fast path) ───────────────────────────────
+      const byUrl = checkByUrlStmt.get(prop.listing_url);
+      if (byUrl) {
+        updateSeenByUrlStmt.run({ price: prop.price ?? null, listing_url: prop.listing_url });
         result.updated++;
+        continue;
       }
+
+      // ── 2. Address match — catches reposts with a new URL ─────────────
+      const street = normalizeStreet(prop.address);
+      const canMatchByAddr = street && /\d/.test(street);
+      const byAddr = canMatchByAddr
+        ? checkByAddrStmt.get({
+            source: prop.source,
+            addressPattern: street.replace(/[%_]/g, '\\$&') + '%',
+          }) as { listing_url: string } | undefined
+        : undefined;
+
+      if (byAddr) {
+        // Same property reposted with a new URL — update the existing record
+        updateSeenByUrlStmt.run({ price: prop.price ?? null, listing_url: byAddr.listing_url });
+        result.updated++;
+        continue;
+      }
+
+      // ── 3. Genuinely new listing ──────────────────────────────────────
+      insertStmt.run({
+        source: prop.source,
+        address: prop.address,
+        price: prop.price ?? null,
+        beds: prop.beds ?? null,
+        baths: prop.baths ?? null,
+        sqft: prop.sqft ?? null,
+        listing_url: prop.listing_url,
+        description: prop.description ?? null,
+        phone: prop.phone ?? null,
+        location: prop.location ?? null,
+        amenities: prop.amenities ? JSON.stringify(prop.amenities) : null,
+        key_facts: prop.key_facts ? JSON.stringify(prop.key_facts) : null,
+      });
+      result.inserted++;
     }
   });
 
@@ -156,5 +195,39 @@ export function getStats(): { total: number; bySource: Record<string, number>; n
 export function deleteProperty(id: number): boolean {
   const db = getDb();
   const result = db.prepare('DELETE FROM properties WHERE id = ?').run(id);
+  return result.changes > 0;
+}
+
+// Returns properties missing at least one of beds/baths/sqft that have a
+// parseable street address (starts with a digit — vague addresses are skipped)
+export function getPropertiesMissingDetails(): PropertyRecord[] {
+  const db = getDb();
+  const rows = db.prepare(`
+    SELECT * FROM properties
+    WHERE (beds IS NULL OR baths IS NULL OR sqft IS NULL)
+      AND address GLOB '[0-9]*'
+    ORDER BY date_added DESC
+  `).all() as any[];
+  return rows.map(row => ({
+    ...row,
+    amenities: row.amenities ? JSON.parse(row.amenities) : [],
+    key_facts: row.key_facts ? JSON.parse(row.key_facts) : [],
+  }));
+}
+
+export function updatePropertyDetails(
+  id: number,
+  details: { beds?: string; baths?: string; sqft?: string },
+): boolean {
+  const db = getDb();
+  const setParts: string[] = [];
+  const params: Record<string, unknown> = { id };
+
+  if (details.beds != null) { setParts.push('beds = @beds'); params.beds = details.beds; }
+  if (details.baths != null) { setParts.push('baths = @baths'); params.baths = details.baths; }
+  if (details.sqft != null) { setParts.push('sqft = @sqft'); params.sqft = details.sqft; }
+
+  if (setParts.length === 0) return false;
+  const result = db.prepare(`UPDATE properties SET ${setParts.join(', ')} WHERE id = @id`).run(params);
   return result.changes > 0;
 }

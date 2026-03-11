@@ -28,7 +28,7 @@ interface Stats {
 
 interface ScrapeResult {
   source: string;
-  status: 'idle' | 'running' | 'done' | 'error';
+  status: 'idle' | 'running' | 'enriching' | 'done' | 'error';
   message: string;
   newCount?: number;
 }
@@ -38,6 +38,8 @@ const SOURCES = [
   { key: 'craigslist-sale', label: 'Craigslist (For Sale)', dbSource: 'Craigslist (For Sale)', endpoint: '/api/scrape?source=craigslist-sale', color: 'bg-orange-500 hover:bg-orange-600' },
   { key: 'craigslist-rentals', label: 'Craigslist (Rentals)', dbSource: 'Craigslist (Rentals)', endpoint: '/api/scrape?source=craigslist-rentals', color: 'bg-amber-500 hover:bg-amber-600' },
   { key: 'zumper', label: 'Zumper', dbSource: 'Zumper', endpoint: '/api/scrape?source=zumper', color: 'bg-teal-600 hover:bg-teal-700' },
+  { key: 'realtybase-sale', label: 'Realtor.com (For Sale)', dbSource: 'Realtor.com (For Sale)', endpoint: '/api/scrape?source=realtybase-sale', color: 'bg-blue-600 hover:bg-blue-700' },
+  { key: 'realtybase-rentals', label: 'Realtor.com (Rentals)', dbSource: 'Realtor.com (Rentals)', endpoint: '/api/scrape?source=realtybase-rentals', color: 'bg-indigo-500 hover:bg-indigo-600' },
 ];
 
 const BADGE_COLORS: Record<string, string> = {
@@ -46,6 +48,8 @@ const BADGE_COLORS: Record<string, string> = {
   'Craigslist (Rentals)': 'bg-amber-100 text-amber-700',
   'Zumper': 'bg-teal-100 text-teal-700',
   'Apartments.com': 'bg-blue-100 text-blue-700',
+  'Realtor.com (For Sale)': 'bg-blue-100 text-blue-700',
+  'Realtor.com (Rentals)': 'bg-indigo-100 text-indigo-700',
 };
 
 export default function Dashboard() {
@@ -82,19 +86,38 @@ export default function Dashboard() {
   async function runScraper(source: typeof SOURCES[number]) {
     setScrapeResults(prev => ({
       ...prev,
-      [source.key]: { source: source.label, status: 'running', message: 'Scraping in progress...' }
+      [source.key]: { source: source.label, status: 'running', message: '' }
     }));
     try {
       const res = await fetch(source.endpoint);
       const data = await res.json();
       if (data.success) {
+        const newCount = data.saved?.inserted ?? 0;
+
+        // ── Enrichment phase ──────────────────────────────────────────────
+        setScrapeResults(prev => ({
+          ...prev,
+          [source.key]: { source: source.label, status: 'enriching', message: '', newCount }
+        }));
+
+        let enrichMsg = '';
+        try {
+          const enrichRes = await fetch('/api/enrich');
+          const enrichData = await enrichRes.json();
+          if (enrichData.success && enrichData.enriched > 0) {
+            enrichMsg = ` ${enrichData.enriched} enriched with assessor data.`;
+          }
+        } catch {
+          // enrichment failure is non-fatal
+        }
+
         setScrapeResults(prev => ({
           ...prev,
           [source.key]: {
             source: source.label,
             status: 'done',
-            message: `Done — ${data.saved?.inserted ?? 0} new listings added.`,
-            newCount: data.saved?.inserted,
+            message: `Done — ${newCount} new listings added.${enrichMsg}`,
+            newCount,
           }
         }));
         await fetchProperties();
@@ -174,7 +197,10 @@ export default function Dashboard() {
           <div className="flex flex-wrap gap-4">
             {SOURCES.map(source => {
               const result = scrapeResults[source.key];
-              const isRunning = result?.status === 'running';
+              const isRunning = result?.status === 'running' || result?.status === 'enriching';
+              const spinnerLabel = result?.status === 'enriching'
+                ? `Enriching ${source.label}...`
+                : `Scraping ${source.label}...`;
               return (
                 <div key={source.key} className="flex items-center gap-3">
                   <button
@@ -188,11 +214,11 @@ export default function Dashboard() {
                           <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                           <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
                         </svg>
-                        Scraping {source.label}...
+                        {spinnerLabel}
                       </span>
                     ) : `Scrape ${source.label}`}
                   </button>
-                  {result && result.status !== 'running' && (
+                  {result && (result.status === 'done' || result.status === 'error') && (
                     <span className={`text-sm ${result.status === 'done' ? 'text-green-600' : 'text-red-600'}`}>
                       {result.status === 'done' ? '✓' : '✗'} {result.message}
                     </span>

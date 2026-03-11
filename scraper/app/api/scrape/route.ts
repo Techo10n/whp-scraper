@@ -3,6 +3,7 @@ import type { Browser } from 'puppeteer';
 import { launchBrowser } from '@/lib/scrapers/browser';
 import { registry } from '@/lib/scrapers/registry';
 import { upsertProperties } from '@/db/database';
+import { deduplicateWithinScrape } from '@/lib/scrapers/dedup';
 
 export async function GET(request: Request) {
   const source = new URL(request.url).searchParams.get('source') ?? '';
@@ -19,16 +20,32 @@ export async function GET(request: Request) {
     );
   }
 
+  if (!scraper.scrape && !scraper.scrapeApi) {
+    return NextResponse.json(
+      { success: false, error: `Scraper "${source}" has no scrape function` },
+      { status: 500 }
+    );
+  }
+
   console.log(`[scrape] Starting: ${scraper.label}`);
   let browser: Browser | undefined;
   try {
-    const { browser: b, page } = await launchBrowser();
-    browser = b;
-
-    const properties = await scraper.scrape(page);
+    let properties;
+    if (scraper.scrapeApi) {
+      properties = await scraper.scrapeApi();
+    } else {
+      const { browser: b, page } = await launchBrowser();
+      browser = b;
+      properties = await scraper.scrape!(page);
+    }
     console.log(`[scrape] ${scraper.label}: extracted ${properties.length} properties`);
 
-    const saved = upsertProperties(properties);
+    const { deduped, removed } = deduplicateWithinScrape(properties);
+    if (removed > 0) {
+      console.log(`[scrape] ${scraper.label}: removed ${removed} within-scrape duplicates`);
+    }
+
+    const saved = upsertProperties(deduped);
     console.log(`[scrape] ${scraper.label}: ${saved.inserted} new, ${saved.updated} updated`);
 
     return NextResponse.json({

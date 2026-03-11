@@ -2,6 +2,7 @@ import type { ScraperDef } from './types';
 import { redfinScraper } from './redfin';
 import { craigslistSaleScraper, craigslistRentalsScraper } from './craigslist';
 import { zumperScraper } from './zumper';
+import { realtyBaseSaleScraper, realtyBaseRentalsScraper } from './realtybase';
 
 // All available scrapers, in display order
 export const allScrapers: ScraperDef[] = [
@@ -9,6 +10,8 @@ export const allScrapers: ScraperDef[] = [
   craigslistSaleScraper,
   craigslistRentalsScraper,
   zumperScraper,
+  realtyBaseSaleScraper,
+  realtyBaseRentalsScraper,
 ];
 
 // Keyed by ScraperDef.key for O(1) lookup

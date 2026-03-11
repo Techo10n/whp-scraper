@@ -28,6 +28,13 @@ export async function initPuppeteer() {
   }
 }
 
+export async function configurePage(page: Page): Promise<void> {
+  await page.setUserAgent(
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+  );
+  await page.setViewport({ width: 1280, height: 720 });
+}
+
 export async function launchBrowser(): Promise<{ browser: Browser; page: Page }> {
   const puppeteer = await initPuppeteer();
   const browser = await puppeteer.launch({
@@ -37,9 +44,6 @@ export async function launchBrowser(): Promise<{ browser: Browser; page: Page }>
   }) as Browser;
 
   const page = await browser.newPage();
-  await page.setUserAgent(
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-  );
-  await page.setViewport({ width: 1280, height: 720 });
+  await configurePage(page);
   return { browser, page };
 }
